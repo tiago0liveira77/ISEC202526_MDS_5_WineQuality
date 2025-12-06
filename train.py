@@ -20,13 +20,11 @@ def load_data(path):
         # O dataset original usa ';' como separador
         df = pd.read_csv(path, sep=';')
 
-        # --- LINHA NOVA: CORREÇÃO DE NOMES ---
         # Substituir espaços por underscores (ex: "fixed acidity" -> "fixed_acidity")
         df.columns = df.columns.str.replace(' ', '_')
         # -------------------------------------
 
         print(f"✅ Dados carregados com sucesso! Dimensão: {df.shape}")
-        # Verificar se funcionou
         print(f"   Colunas: {list(df.columns)}")
         return df
     except FileNotFoundError:

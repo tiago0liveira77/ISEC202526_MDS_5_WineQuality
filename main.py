@@ -3,6 +3,34 @@ from pydantic import BaseModel, Field
 import joblib
 import pandas as pd
 import uvicorn
+import csv
+import os
+from datetime import datetime
+
+
+LOG_FILE = "production_logs.csv"
+
+
+def log_prediction(input_data: dict, prediction: int):
+    """
+    Guarda os dados recebidos num CSV para monitorização futura (Data Drift).
+    """
+    # Adicionar timestamp e a previsão feita
+    log_entry = input_data.copy()
+    log_entry['timestamp'] = datetime.now().isoformat()
+    log_entry['prediction'] = prediction
+
+    # Verificar se o ficheiro existe para escrever o cabeçalho
+    file_exists = os.path.isfile(LOG_FILE)
+
+    try:
+        with open(LOG_FILE, mode='a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=log_entry.keys())
+            if not file_exists:
+                writer.writeheader()  # Escreve o header se for a primeira vez
+            writer.writerow(log_entry)
+    except Exception as e:
+        print(f"Erro ao guardar log: {e}")
 
 # --- 1. CONFIGURAÇÃO E DADOS DE EXEMPLO (TEMPLATES) ---
 
@@ -83,30 +111,52 @@ class WineInput(BaseModel):
 # --- 4. LÓGICA DE PREDIÇÃO (Reutilizável) ---
 
 def run_inference(data_dict):
-    """Função auxiliar que executa a lógica de ML"""
-    if model is None or scaler is None:
-        raise HTTPException(status_code=503, detail="Modelo não carregado.")
+    """
+    Orquestrador do pipeline de inferência.
+    Responsável por validar, transformar e classificar uma única instância de vinho.
+    """
 
-    # 1. Converter dict para DataFrame
+    # 1. Fail-Fast Check: Validação de Dependências
+    # Garante que a API não tenta processar nada se os artefatos não estiverem carregados.
+    if model is None or scaler is None:
+        raise HTTPException(status_code=503, detail="Serviço indisponível: Modelo não carregado.")
+
+    # 2. Adaptação de Dados (Data Ingestion)
+    # Converte o dicionário (JSON) num DataFrame pandas, formato esperado pelo Scikit-Learn.
     input_df = pd.DataFrame([data_dict])
 
-    # 2. Normalizar (Usando o scaler treinado)
+    # 3. Pré-processamento (Feature Scaling)
+    # Aplica a mesma transformação matemática (Média/Desvio Padrão) usada no treino.
+    # O bloco try-catch protege a API contra dados numéricos inválidos ou colunas em falta.
     try:
         input_scaled = scaler.transform(input_df)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Erro na normalização: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Erro de Schema/Normalização: {str(e)}")
 
-    # 3. Predição
-    pred_class = model.predict(input_scaled)[0]  # 0 ou 1
-    probs = model.predict_proba(input_scaled)[0]  # [Prob_0, Prob_1]
+    # 4. Execução do Modelo (Core Logic)
+    # .predict() devolve a classe vencedora (0 ou 1)
+    pred_class = model.predict(input_scaled)[0]
 
-    # Probabilidade da classe prevista
+    # .predict_proba() devolve as probabilidades de cada classe: [Prob_Normal, Prob_Premium]
+    # Exemplo: [0.15, 0.85] significa 15% certeza que é Normal, 85% que é Premium.
+    probs = model.predict_proba(input_scaled)[0]
+
+    # 5. Extração da Confiança
+    # Selecionamos a probabilidade correspondente à classe que ganhou.
+    # Se pred_class for 1, pegamos o valor do índice 1.
     confidence = probs[pred_class]
 
+    # 6. MLOps: Monitorização (Data Drift)
+    # Regista o input e o output para auditoria futura (CSV).
+    log_prediction(data_dict, int(pred_class))
+
+    # 7. Formatação da Resposta (Human-Readable)
     label = "Premium" if pred_class == 1 else "Normal"
 
+    # 8. Construção do Contrato de Resposta (DTO)
     return {
         "status": "success",
+        # Retornamos um resumo dos inputs principais para confirmação
         "input_summary": {
             "alcohol": data_dict['alcohol'],
             "sulphates": data_dict['sulphates']
@@ -114,7 +164,7 @@ def run_inference(data_dict):
         "prediction": {
             "label": label,
             "class_id": int(pred_class),
-            "confidence": round(float(confidence), 4)
+            "confidence": round(float(confidence), 4)  # Arredondamento para leitura limpa
         },
         "message": "Vinho de Excelência detetado!" if pred_class == 1 else "Vinho Standard."
     }
