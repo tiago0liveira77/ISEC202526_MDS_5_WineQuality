@@ -207,3 +207,6 @@ marimo/_lsp/
 __marimo__/
 .idea/ISEC202526_MDS_5_WineQuality.iml
 .idea/misc.xml
+
+model_rf.pkl
+scaler.pkl
